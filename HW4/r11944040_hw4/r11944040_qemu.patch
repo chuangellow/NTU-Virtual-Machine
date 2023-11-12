@@ -1,0 +1,55 @@
+diff --git a/target/arm/translate-a64.c b/target/arm/translate-a64.c
+index 9333d7be41..a1406890a0 100644
+--- a/target/arm/translate-a64.c
++++ b/target/arm/translate-a64.c
+@@ -14756,7 +14756,7 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
+     DisasContext *s = container_of(dcbase, DisasContext, base);
+     CPUARMState *env = cpu->env_ptr;
+     uint64_t pc = s->base.pc_next;
+-    uint32_t insn;
++    uint32_t insn, next_insn;
+ 
+     /* Singlestep exceptions have the highest priority. */
+     if (s->ss_active && !s->pstate_ss) {
+@@ -14793,6 +14793,7 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
+ 
+     s->pc_curr = pc;
+     insn = arm_ldl_code(env, &s->base, pc, s->sctlr_b);
++    next_insn = arm_ldl_code(env, &s->base, pc+4, s->sctlr_b);
+     s->insn = insn;
+     s->base.pc_next = pc + 4;
+ 
+@@ -14846,7 +14847,17 @@ static void aarch64_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
+             tcg_debug_assert(s->btype == 0);
+         }
+     }
+-
++    // For VM_HW4
++    uint32_t insn_value = 0x2a0003f8;
++    uint32_t next_insn_value = 0xaa1a03e0;
++    if (insn == insn_value && next_insn == next_insn_value) {
++        env->xregs[0] &= 0;
++    }
++    insn_value = 0x2a0003f3;
++    next_insn_value = 0x350033a0;
++    if (insn == insn_value && next_insn == next_insn_value) {
++        env->xregs[0] &= 0;
++    }
+     switch (extract32(insn, 25, 4)) {
+     case 0x0: case 0x1: case 0x3: /* UNALLOCATED */
+         unallocated_encoding(s);
+diff --git a/target/arm/translate.c b/target/arm/translate.c
+index bf2196b9e2..4dc105ab76 100644
+--- a/target/arm/translate.c
++++ b/target/arm/translate.c
+@@ -9934,6 +9934,10 @@ void gen_intermediate_code(CPUState *cpu, TranslationBlock *tb, int max_insns)
+ #endif
+ 
+     translator_loop(ops, &dc.base, cpu, tb, max_insns);
++    /* 
++     * for debugging the disas_code
++    arm_tr_disas_log(&dc.base, cpu);
++    */
+ }
+ 
+ void restore_state_to_opc(CPUARMState *env, TranslationBlock *tb,

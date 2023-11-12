@@ -1,0 +1,203 @@
+diff --git a/arch/arm64/include/asm/kvm_host.h b/arch/arm64/include/asm/kvm_host.h
+index f8be56d53..8fab5cd13 100644
+--- a/arch/arm64/include/asm/kvm_host.h
++++ b/arch/arm64/include/asm/kvm_host.h
+@@ -47,6 +47,10 @@
+ #define KVM_REQ_RECORD_STEAL	KVM_ARCH_REQ(3)
+ #define KVM_REQ_RELOAD_GICv4	KVM_ARCH_REQ(4)
+ #define KVM_REQ_RELOAD_PMU	KVM_ARCH_REQ(5)
++/*
++ * define the request number of WRITE_GPA ioctl for NTU_VM_HW2
++ */
++#define KVM_REQ_ARM_WRITE_GPA KVM_ARCH_REQ(6)
+ 
+ #define KVM_DIRTY_LOG_MANUAL_CAPS   (KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE | \
+ 				     KVM_DIRTY_LOG_INITIALLY_SET)
+@@ -384,6 +388,9 @@ struct kvm_vcpu_arch {
+ 		u64 last_steal;
+ 		gpa_t base;
+ 	} steal;
++
++    /* add write_gpa_args for NTU_VM_HW2 */
++    struct kvm_arm_write_gpa_args write_gpa_args;
+ };
+ 
+ /* Pointer to the vcpu's SVE FFR for sve_{save,load}_state() */
+diff --git a/arch/arm64/kvm/arm.c b/arch/arm64/kvm/arm.c
+index fe102cd2e..a4304c0dd 100644
+--- a/arch/arm64/kvm/arm.c
++++ b/arch/arm64/kvm/arm.c
+@@ -44,6 +44,8 @@
+ #include <kvm/arm_pmu.h>
+ #include <kvm/arm_psci.h>
+ 
++#define access_ok(addr, size) __range_ok(addr, size)
++
+ static enum kvm_mode kvm_mode = KVM_MODE_DEFAULT;
+ DEFINE_STATIC_KEY_FALSE(kvm_protected_mode_initialized);
+ 
+@@ -704,6 +706,18 @@ static void check_vcpu_requests(struct kvm_vcpu *vcpu)
+ 		if (kvm_check_request(KVM_REQ_RELOAD_PMU, vcpu))
+ 			kvm_pmu_handle_pmcr(vcpu,
+ 					    __vcpu_sys_reg(vcpu, PMCR_EL0));
++        /*
++         * Add request handler of ARM_WRITE_GPA for NTU_VM_HW2
++         */
++        if (kvm_check_request(KVM_REQ_ARM_WRITE_GPA, vcpu)) {
++            struct kvm_arm_write_gpa_args *arg;
++            arg = &vcpu->arch.write_gpa_args;
++            printk(KERN_INFO "KVM_ARM_WRITE_GPA: GPA: 0x%llx, size: %d\n", (unsigned long long)arg->gpa, arg->size); 
++            int ret = kvm_vcpu_write_guest(vcpu, arg->gpa, arg->data, arg->size); 
++            if (ret) {
++                printk(KERN_ERR "KVM_ARM_WRITE_GPA: Can't sucessfully write data to guest memory, return value is: %d\n", ret);
++            }
++        }
+ 	}
+ }
+ 
+@@ -2110,6 +2124,7 @@ int kvm_arch_init(void *opaque)
+ 	} else {
+ 		kvm_info("Hyp mode initialized successfully\n");
+ 	}
++    printk("this is my KVM [r11944040]\n");
+ 
+ 	return 0;
+ 
+diff --git a/include/uapi/linux/kvm.h b/include/uapi/linux/kvm.h
+index a067410eb..256716a1d 100644
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -838,6 +838,14 @@ struct kvm_ppc_resize_hpt {
+ 	__u32 pad;
+ };
+ 
++/* args of KVM_ARM_WRITE_GPA ioctl for NTU_VM_HW2 */
++struct kvm_arm_write_gpa_args {
++    uint32_t vmid;  // the vmid that you, as the host, want to write to
++    uint64_t gpa;   // the gpa of the guest
++    uint64_t data;  // address of the payload in host user space
++    uint64_t size;  // size of the payload
++};
++
+ #define KVMIO 0xAE
+ 
+ /* machine type bits, to be used as argument to KVM_CREATE_VM */
+@@ -886,6 +894,10 @@ struct kvm_ppc_resize_hpt {
+ #define KVM_TRACE_DISABLE         __KVM_DEPRECATED_MAIN_0x08
+ #define KVM_GET_EMULATED_CPUID	  _IOWR(KVMIO, 0x09, struct kvm_cpuid2)
+ #define KVM_GET_MSR_FEATURE_INDEX_LIST    _IOWR(KVMIO, 0x0a, struct kvm_msr_list)
++/*
++ * System ioctl defined for NTU_VM_HW2
++ */
++#define KVM_ARM_WRITE_GPA         _IOWR(KVMIO, 0x0b, struct kvm_arm_write_gpa_args)
+ 
+ /*
+  * Extension capability list.
+diff --git a/virt/kvm/kvm_main.c b/virt/kvm/kvm_main.c
+index 7851f3a1b..cffb56038 100644
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -2859,11 +2859,15 @@ static int __kvm_write_guest_page(struct kvm *kvm,
+ 	unsigned long addr;
+ 
+ 	addr = gfn_to_hva_memslot(memslot, gfn);
+-	if (kvm_is_error_hva(addr))
++	if (kvm_is_error_hva(addr)) {
++        printk(KERN_INFO "KVM_ARM_WRITE_GPA: error hva is %lx\n", addr);
+ 		return -EFAULT;
++    }
+ 	r = __copy_to_user((void __user *)addr + offset, data, len);
+-	if (r)
++	if (r) {
++        printk(KERN_INFO "KVM_ARM_WRITE_GPA: error hva is %lx\n, failed to copy %d", addr, r);
+ 		return -EFAULT;
++    }
+ 	mark_page_dirty_in_slot(kvm, memslot, gfn);
+ 	return 0;
+ }
+@@ -2881,7 +2885,11 @@ int kvm_vcpu_write_guest_page(struct kvm_vcpu *vcpu, gfn_t gfn,
+ 			      const void *data, int offset, int len)
+ {
+ 	struct kvm_memory_slot *slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
+-
++    if (!slot) {
++        printk(KERN_INFO "KVM_ARM_WRITE_GPA: slot is NULL\n");
++    } else {
++        printk(KERN_INFO "KVM_ARM_WRITE_GPA: slot: start_gfn=0x%llx, npages=%lld, hva=0x%llx\n", slot->base_gfn, slot->npages, slot->userspace_addr);
++    }
+ 	return __kvm_write_guest_page(vcpu->kvm, slot, gfn, data, offset, len);
+ }
+ EXPORT_SYMBOL_GPL(kvm_vcpu_write_guest_page);
+@@ -2918,6 +2926,7 @@ int kvm_vcpu_write_guest(struct kvm_vcpu *vcpu, gpa_t gpa, const void *data,
+ 	while ((seg = next_segment(len, offset)) != 0) {
+ 		ret = kvm_vcpu_write_guest_page(vcpu, gfn, data, offset, seg);
+ 		if (ret < 0)
++            printk(KERN_INFO "KVM_ARM_WRITE_GPA: The gfn is %x, offset is %x\n", gfn, offset);
+ 			return ret;
+ 		offset = 0;
+ 		len -= seg;
+@@ -4653,6 +4662,51 @@ static int kvm_dev_ioctl_create_vm(unsigned long type)
+ 	return r;
+ }
+ 
++/*
++ * ioctl handler of KVM_ARM_WRITE_GPA for NTU_VM_HW2 
++ */
++static long kvm_dev_ioctl_write_gpa(struct kvm_arm_write_gpa_args *arg) {
++    struct kvm *this_kvm;
++    struct kvm *task_kvm = NULL;
++    struct kvm_vcpu *vcpu;
++    uint8_t *kbuf;
++    kbuf = kmalloc(arg->size, GFP_KERNEL);
++    if (!kbuf)
++        return -ENOMEM;
++
++    if (copy_from_user(kbuf, (void __user *)(uintptr_t)arg->data, arg->size)) {
++        kfree(kbuf);
++        return -EFAULT;
++    }
++
++    mutex_lock(&kvm_lock);
++    list_for_each_entry(this_kvm, &vm_list, vm_list) {
++        if (this_kvm->arch.mmu.vmid.vmid == arg->vmid) {
++            task_kvm = this_kvm;
++            break;
++        }
++    }
++    mutex_unlock(&kvm_lock);
++    if (!task_kvm) {
++        printk(KERN_ERR "VMID %u not found.\n", arg->vmid);
++        return -ENOENT;
++    }
++
++    mutex_lock(&kvm_lock);
++    vcpu = task_kvm->vcpus[0];
++    vcpu->arch.write_gpa_args.vmid = arg->vmid;
++    vcpu->arch.write_gpa_args.gpa = arg->gpa;
++    vcpu->arch.write_gpa_args.data = kbuf;
++    vcpu->arch.write_gpa_args.size = arg->size;
++    kvm_make_request(KVM_REQ_ARM_WRITE_GPA, vcpu);
++    mutex_unlock(&kvm_lock);
++
++    kvm_vcpu_kick(vcpu);
++    kfree(kbuf);
++
++   return 0;
++}
++
+ static long kvm_dev_ioctl(struct file *filp,
+ 			  unsigned int ioctl, unsigned long arg)
+ {
+@@ -4686,6 +4740,12 @@ static long kvm_dev_ioctl(struct file *filp,
+ 	case KVM_TRACE_DISABLE:
+ 		r = -EOPNOTSUPP;
+ 		break;
++    /*
++     * system ioctl case for NTU_VM_HW2
++     */
++    case KVM_ARM_WRITE_GPA:
++        r = kvm_dev_ioctl_write_gpa(arg);
++        break;
+ 	default:
+ 		return kvm_arch_dev_ioctl(filp, ioctl, arg);
+ 	}

@@ -1,0 +1,21 @@
+version: '3'
+services:
+  server:
+    build: ./server
+    volumes:
+      - r11944040_servervol:/r11944040_servervol
+    command: python ./server.py
+    network_mode: host
+    ports:
+      - "1126:1126"
+  client:
+    build: ./client
+    volumes:
+      - r11944040_clientvol:/r11944040_clientvol
+    network_mode: host
+    command: python ./client.py
+    depends_on:
+      - server
+volumes:
+  r11944040_servervol:
+  r11944040_clientvol:

@@ -1,0 +1,31 @@
+# NTU VM HW2
+
+### Environment Setup
+#### Compile the linux and apply the patch
+1. git clone --depth 1 --branch v5.15 https://github.com/torvalds/linux.git
+2. cd linux
+3. git apply ./r11944040_hw2.patch
+4. make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+5. make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j4
+#### Run the KVM host and guest
+1. `run-kvm.sh -k <path/to/new_kernel_image> -i <path/to/host_disk_image>` to run the KVM host
+2. `run-guest.sh -k <path/to/kernel_image> -i <path/to/guest_disk_image>` in the KVM host to run the KVM guest
+#### Compile the test program
+1. make all
+2. push the guest_main guest_hw2_sheep into your guest KVM.
+3. push the host_main host_hw2_test into your host KVM.
+4. make clean
+
+### To Reproduce the Result
+#### Testing new ioctl
+1. execute ```echo 0 | sudo tee /proc/sys/kernel/randomize_va_space``` to disable the ASLR
+2. execute ```./guest_main &``` in guest KVM.
+3. use `gdb -p <pid>` and `page-types -p <pid> -L` to get the GPA corresponding to the GVA of the data variable.
+4. execute ```./host_main <vmid> <GPA>``` in host KVM.
+
+#### Code injection
+1. execute ```echo 0 | sudo tee /proc/sys/kernel/randomize_va_space``` to disable the ASLR
+2. execute ```./guest_hw2_sheep &``` in guest KVM.
+3. use `gdb -p <pid>` and set breakpoint `b main:2` to get the GVA of the main function.
+4. use `page-types -p <pid> -L` to convert the GVA into GPA.
+5. execute ```./host_hw2_test <vmid> <GPA>``` in host KVM.
